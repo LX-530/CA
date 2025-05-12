@@ -1,5 +1,3 @@
-# Louvre_Evacuation
-来源：2019年 美赛 D题
 
 ## 问题背景
   法国发生的恐怖袭击越来越多，在许多热门目的地，亟需一个应对紧急情况的疏散计划。
@@ -51,6 +49,4 @@
 ![pic2](https://github.com/izcat/Louvre_Evacuation/blob/master/result/figure_2.png)
 
 
-## 代码说明
-请见code目录  
-https://github.com/izcat/Louvre_Evacuation/blob/master/code/README.md
+
