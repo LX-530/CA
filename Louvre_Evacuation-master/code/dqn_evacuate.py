@@ -49,6 +49,14 @@ class EvacuationEnv:
         self.time = 0
         return self._get_state()
 
+    def move_robot(self):
+        # 机器人在x=8~15之间来回巡逻
+        if self.robot_position[0] >= self.robot_range[1]:
+            self.robot_direction = -1
+        elif self.robot_position[0] <= self.robot_range[0]:
+            self.robot_direction = 1
+        self.robot_position[0] += self.robot_direction
+
     def is_occupied(self, x, y):
         # 判断(x, y)是否被机器人占据
         return [x, y] == self.robot_position
@@ -103,9 +111,20 @@ class EvacuationEnv:
         return state
 
     def step(self, action):
-        # 机器人根据动作移动
-        self.map.move_robot(action, self.people.list)
-        self.robot_position = self.map.robot_position.copy()
+        self.move_robot()  # 机器人先移动
+        # Action: 0=up, 1=down, 2=left, 3=right, 4=stay
+        next_pos = self.robot_position.copy()
+        if action == 0 and self.robot_position[1] > 0:
+            next_pos[1] -= 1
+        elif action == 1 and self.robot_position[1] < self.height - 1:
+            next_pos[1] += 1
+        elif action == 2 and self.robot_position[0] > 0:
+            next_pos[0] -= 1
+        elif action == 3 and self.robot_position[0] < self.width - 1:
+            next_pos[0] += 1
+        # 机器人不能离开活动区间
+        if self.robot_range[0] <= next_pos[0] <= self.robot_range[1]:
+            self.robot_position = next_pos
 
         # 更新人群位置和健康值
         evac_count = self.people.run()
@@ -126,7 +145,7 @@ class EvacuationEnv:
                     rewards -= 50  # 在火源位置惩罚
                 # 如果人离机器人太近
                 elif dist_to_robot < 2:
-                    rewards -= 50  # 增加机器人排斥力，从-20改为-50
+                    rewards -= 20  # 避免人群聚集
                 # 如果人离出口更近了
                 elif dist_to_exit < self.width/2:
                     rewards += 10  # 鼓励向出口移动
@@ -135,8 +154,8 @@ class EvacuationEnv:
         rewards -= 1  # 每步小惩罚，鼓励快速疏散
         
         self.time += self.time_step
-        done = all(p.savety for p in self.people.list)  # 所有人已疏散
-        
+        evacuated = sum(1 for p in self.people.list if p.savety)
+        done = evacuated >= int(0.8 * self.num_people)
         return self._get_state(), rewards, done
 
 # DQN Agent

@@ -1,5 +1,37 @@
 import numpy as np
 import math
+import pandas as pd
+
+def load_field_from_csv(csv_path, width, height):
+    """
+    从csv读取数据，按数值从小到大填充左上四分之一元胞，然后镜像补全全场。
+    width, height: 全场宽高
+    返回: shape=(height, width) 的矩阵
+    """
+    df = pd.read_csv(csv_path)
+    # 去掉时间列
+    data = df.drop(columns=['Time'], errors='ignore').values.flatten()
+    # 排序
+    data_sorted = np.sort(data)
+    # 计算左上四分之一的shape
+    h_half = height // 2
+    w_half = width // 2
+    quarter_size = h_half * w_half
+    # 取前quarter_size个数填充左上四分之一
+    quarter = data_sorted[:quarter_size].reshape((h_half, w_half))
+    # 镜像扩展到左半场
+    left_half = np.concatenate([quarter, np.fliplr(quarter)], axis=1)
+    # 镜像扩展到全场
+    full_field = np.concatenate([left_half, np.flipud(left_half)], axis=0)
+    # 若height为奇数，补最后一行；若width为奇数，补最后一列
+    if full_field.shape[0] < height:
+        last_row = full_field[-1:,:]
+        full_field = np.vstack([full_field, last_row])
+    if full_field.shape[1] < width:
+        last_col = full_field[:,-1:]
+        full_field = np.hstack([full_field, last_col])
+    # 裁剪到目标shape
+    return full_field[:height, :width]
 
 class FireSource:
     """火灾物理模型"""
@@ -72,8 +104,14 @@ class FireSource:
 
 class FireSpreadModel:
     """火灾蔓延模型"""
-    def __init__(self, sources):
-        self.sources = sources  # 多个火源列表
+    def __init__(self, sources, width=18, height=15):
+        self.sources = sources
+        self.width = width
+        self.height = height
+        # 加载CO、soot、temperature场
+        self.co_field = load_field_from_csv('code/co_data.csv', width, height)
+        self.soot_field = load_field_from_csv('code/soot_data.csv', width, height)
+        self.temp_field = load_field_from_csv('code/temperature_data.csv', width, height)
         
     def get_max_danger(self, pos):
         """获取所有火源中的最大危险度"""
@@ -91,3 +129,21 @@ class FireSpreadModel:
                 temp_field[i, j] = sum(source.get_temperature(pos) for source in self.sources)
         
         return temp_field
+
+    def get_co_concentration(self, pos):
+        x, y = int(pos[0]), int(pos[1])
+        if 0 <= y < self.height and 0 <= x < self.width:
+            return self.co_field[y, x]
+        return 0
+
+    def get_soot_concentration(self, pos):
+        x, y = int(pos[0]), int(pos[1])
+        if 0 <= y < self.height and 0 <= x < self.width:
+            return self.soot_field[y, x]
+        return 0
+
+    def get_temperature(self, pos):
+        x, y = int(pos[0]), int(pos[1])
+        if 0 <= y < self.height and 0 <= x < self.width:
+            return self.temp_field[y, x]
+        return 0

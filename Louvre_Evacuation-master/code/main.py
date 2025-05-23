@@ -65,6 +65,7 @@ class GUI:
         y2 = (ry + 1) * self.Pic_Ratio
         self.canvas.create_rectangle(x1, y1, x2, y2, fill="blue", outline="black", tag="robot")
         
+        # 绘制人群
         for p in People_List:
             if p.savety:
                 continue
@@ -79,6 +80,8 @@ class GUI:
                                       outline="gray", 
                                       tag=p.name())
         
+        # 确保机器人始终在最上层显示
+        self.canvas.tag_raise("robot")
 
 def Cellular_Automata(Total_People):
     UI = GUI()
@@ -101,6 +104,19 @@ def Cellular_Automata(Total_People):
         if has_people_nearby:
             myMap.move_robot()
             
+        # 更新人群位置，确保不会与机器人重叠
+        for p in P.list:
+            if not p.savety:
+                # 检查新位置是否与机器人重叠
+                if tuple(p.pos) == tuple(myMap.robot_position):
+                    # 如果重叠，尝试移动到相邻的空位置
+                    for dx, dy in [(0,1), (0,-1), (1,0), (-1,0)]:
+                        new_x = int(p.pos[0]) + dx
+                        new_y = int(p.pos[1]) + dy
+                        if myMap.Check_Valid(new_x, new_y) and (new_x, new_y) != tuple(myMap.robot_position):
+                            p.pos = [new_x, new_y]
+                            break
+        
         Eva_Number = P.run()
         UI.Update_People(P.list)    
         time.sleep(0.1)

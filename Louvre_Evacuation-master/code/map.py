@@ -114,9 +114,6 @@ class Map:
         else:
             return False
 
-
-
-
     def _init_fire_sources(self):
         self.fire_model = FireSpreadModel([
             FireSource(
@@ -195,14 +192,45 @@ class Map:
             y = random.uniform(1, self.Width+2)
         return x, y
 
+    def is_position_occupied(self, x, y):
+        """检查位置是否被占用"""
+        # 检查是否在障碍物列表中
+        if (x, y) in self.barrier_list:
+            return True
+        # 检查是否在出口位置
+        if (x, y) in self.Exit:
+            return True
+        return False
+
     def move_robot(self):
-        # 机器人在x=8~15之间来回巡逻
+        """移动机器人，确保不会与人重叠"""
         x, y = self.robot_position
-        if x >= self.robot_range[1]:
-            self.robot_direction = -1
-        elif x <= self.robot_range[0]:
-            self.robot_direction = 1
-        self.robot_position[0] += self.robot_direction
+        # 尝试移动的方向
+        directions = [
+            (1, 0),   # 右
+            (-1, 0),  # 左
+            (0, 1),   # 下
+            (0, -1),  # 上
+            (0, 0)    # 停留
+        ]
+        
+        # 随机打乱方向顺序
+        random.shuffle(directions)
+        
+        # 尝试每个方向
+        for dx, dy in directions:
+            new_x = x + dx
+            new_y = y + dy
+            
+            # 检查新位置是否在活动范围内且未被占用
+            if (self.robot_range[0] <= new_x <= self.robot_range[1] and 
+                0 <= new_y < self.Width and 
+                not self.is_position_occupied(new_x, new_y)):
+                self.robot_position = [new_x, new_y]
+                return
+        
+        # 如果所有方向都不可行，保持原位
+        self.robot_position = [x, y]
 
     def is_robot(self, x, y):
         return int(x) == self.robot_position[0] and int(y) == self.robot_position[1]

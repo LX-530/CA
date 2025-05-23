@@ -9,6 +9,64 @@ CELL_SIZE = 0.5  # 元胞尺寸 (米)
 ROOM_WIDTH = 15.0  # X轴总长 = 30个元胞 * 0.5m
 ROOM_HEIGHT = 18.0  # Y轴总长 = 36个元胞 * 0.5m
 
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
+
+def visualize_quarter_csv(csv_path, width, height, scale=1.0, cmap='hot', title='', use_last_row=False):
+    """
+    读取左上四分之一数据，镜像补全全场并可视化
+    :param csv_path: 数据文件路径
+    :param width: 全场宽
+    :param height: 全场高
+    :param scale: 缩放系数
+    :param cmap: 热力图色带
+    :param title: 图标题
+    :param use_last_row: 若为True，则只用最后一行数据
+    """
+    df = pd.read_csv(csv_path)
+    if use_last_row:
+        # 只用最后一行
+        row = df.iloc[-1]
+        if 'Time' in row.index:
+            data = row.drop(labels=['Time']).values.astype(float)
+        else:
+            data = row.values.astype(float)
+    else:
+        # 默认全量
+        if 'Time' in df.columns:
+            data = df.drop(columns=['Time'], errors='ignore').values.flatten()
+        else:
+            data = df.values.flatten()
+    # 按数值从小到大排序
+    data_sorted = np.sort(data)
+    h_half = height // 2
+    w_half = width // 2
+    quarter_size = h_half * w_half
+    if data_sorted.shape[0] < quarter_size:
+        raise ValueError("数据量不足以填满左上四分之一区域")
+    quarter = data_sorted[:quarter_size].reshape((h_half, w_half))
+    left_half = np.concatenate([quarter, np.fliplr(quarter)], axis=1)
+    full_field = np.concatenate([left_half, np.flipud(left_half)], axis=0)
+    if full_field.shape[0] < height:
+        last_row = full_field[-1:,:]
+        full_field = np.vstack([full_field, last_row])
+    if full_field.shape[1] < width:
+        last_col = full_field[:,-1:]
+        full_field = np.hstack([full_field, last_col])
+    full_field = full_field[:height, :width]
+    full_field = full_field * scale
+
+    print("min:", full_field.min(), "max:", full_field.max())
+    plt.figure(figsize=(8, 6))
+    plt.imshow(full_field, cmap=cmap, origin='lower', aspect='auto')
+    plt.colorbar(label='Value (after scaling)')
+    plt.title(title or f'Heatmap of {csv_path} (last row)')
+    plt.xlabel('X')
+    plt.ylabel('Y')
+    plt.tight_layout()
+    plt.show()
+    return full_field
+
 def read_and_categorize_data(file_path):
     """读取并分类CSV数据"""
     try:
@@ -70,6 +128,11 @@ def create_heatmap_grid(df):
     soot_grid[int(ROOM_HEIGHT/2/CELL_SIZE):, :] = soot_grid[:int(ROOM_HEIGHT/2/CELL_SIZE), :][::-1, :]
     grid[:, :, 2] = (soot_grid + np.flipud(soot_grid)) / 2
     
+    # 调整数量级
+    grid[:,:,0] = grid[:,:,0] / 500000    # 温度缩小5倍
+    grid[:,:,1] = grid[:,:,1] * 1000000   # CO放大10倍
+    grid[:,:,2] = grid[:,:,2] * 1000000  # 烟雾放大100倍
+    
     return grid
 
 def plot_heatmaps(grid):
@@ -93,11 +156,18 @@ def plot_heatmaps(grid):
     plt.show()
 
 if __name__ == "__main__":
-    file_path = r'D:\github\CA\Louvre_Evacuation-master\code\robo_devc.csv'
-    df = read_and_categorize_data(file_path)
-    
-    if df is not None:
-        grid = create_heatmap_grid(df)
-        plot_heatmaps(grid)
-        np.save('heatmap_grid.npy', grid)
-        print("热力图网格已保存为 heatmap_grid.npy")
+    # 可视化CO浓度最后一行
+    visualize_quarter_csv(
+        'D:/github/CA/Louvre_Evacuation-master/co_data.csv', width=18, height=15, scale=1e5,
+        cmap='Blues', title='CO浓度分布（最后一帧）', use_last_row=True
+    )
+    # 可视化温度最后一行
+    visualize_quarter_csv(
+        'D:/github/CA/Louvre_Evacuation-master/temperature_data.csv', width=18, height=15, scale=1,
+        cmap='hot', title='温度分布（最后一帧）', use_last_row=True
+    )
+    # 可视化烟雾浓度最后一行
+    visualize_quarter_csv(
+        'D:/github/CA/Louvre_Evacuation-master/soot_data.csv', width=18, height=15, scale=1e6,
+        cmap='Greys', title='烟雾分布（最后一帧）', use_last_row=True
+    )
