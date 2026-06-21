@@ -1,0 +1,4 @@
+algorithm,deadlock,eval_seed,failed,failure_reason,final_escaped,invalid_action_count,mean_episode_return,min_robot_distance,num_persons,robot1_start,robot2_start,robot_overlap_rate,robot_path_length,scenario_id,success_80,t80,t90,t_all,train_seed
+Static-2R,False,20000,False,,56,0,-160.0,3.0,70,"(15, 32)","(18, 32)",1.0,0,Best-Static,True,160,,,
+Static-2R,False,20001,False,,56,0,-178.0,3.0,70,"(15, 32)","(18, 32)",1.0,0,Best-Static,True,178,,,
+Static-2R,False,20002,False,,56,0,-171.0,3.0,70,"(15, 32)","(18, 32)",1.0,0,Best-Static,True,171,,,
