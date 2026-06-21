@@ -1,0 +1,5 @@
+algorithm,phase,episodes,success_80_rate,mean_t80,std_t80,mean_invalid_actions,mean_return
+Static-2R,same_seed_eval_for_idqn,20,1.0,166.4,5.897367833908705,0.0,-166.4
+IDQN-2R,greedy_eval,20,1.0,172.5,9.098872110553621,181.35,-172.5
+Static-2R,same_seed_eval_for_qmix,20,1.0,166.4,5.897367833908705,0.0,-166.4
+QMIX-2R,greedy_eval,20,1.0,185.65,13.437085366919968,124.6,-185.65
