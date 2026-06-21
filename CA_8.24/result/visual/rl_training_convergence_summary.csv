@@ -1,0 +1,7 @@
+algorithm,phase,episodes,success_80_rate,mean_t80,first20_t80,last20_t80,delta_last20_minus_first20,mean_invalid_actions,mean_return
+IDQN-2R,train,80,1.0,181.85,183.15,181.7,-1.45,58.2,-181.85
+IDQN-2R,greedy_eval,10,1.0,172.0,,,,284.5,-172.0
+Static-2R,same_seed_eval_for_idqn,10,1.0,166.9,,,,0.0,-166.9
+QMIX-2R,train,80,1.0,186.3375,187.9,185.8,-2.1,107.2375,-186.3375
+QMIX-2R,greedy_eval,10,1.0,186.4,,,,273.3,-186.4
+Static-2R,same_seed_eval_for_qmix,10,1.0,166.9,,,,0.0,-166.9
