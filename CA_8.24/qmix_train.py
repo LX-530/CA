@@ -10,16 +10,27 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from robot_env import RobotEnvironment
-from rl_common import concat_state, make_config, obs_dict_to_list, plot_training_curve, set_global_seeds, static_policy_summary, summarize_convergence, write_csv
+from robot_env import RobotEnvironment, STAY_ACTION
+from rl_common import (
+    concat_state,
+    make_config,
+    obs_dict_to_list,
+    plot_training_curve,
+    set_global_seeds,
+    static_policy_summary,
+    summarize_convergence,
+    write_csv,
+)
 
 
 class AgentQNetwork(nn.Module):
     def __init__(self, obs_dim: int, action_dim: int, hidden_size: int = 128):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden_size), nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size), nn.ReLU(),
+            nn.Linear(obs_dim, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
             nn.Linear(hidden_size, action_dim),
         )
 
@@ -35,7 +46,11 @@ class QMixer(nn.Module):
         self.hyper_w1 = nn.Linear(state_dim, n_agents * mixing_dim)
         self.hyper_b1 = nn.Linear(state_dim, mixing_dim)
         self.hyper_w2 = nn.Linear(state_dim, mixing_dim)
-        self.hyper_b2 = nn.Sequential(nn.Linear(state_dim, mixing_dim), nn.ReLU(), nn.Linear(mixing_dim, 1))
+        self.hyper_b2 = nn.Sequential(
+            nn.Linear(state_dim, mixing_dim),
+            nn.ReLU(),
+            nn.Linear(mixing_dim, 1),
+        )
 
     def forward(self, agent_qs: torch.Tensor, states: torch.Tensor) -> torch.Tensor:
         batch_size = agent_qs.shape[0]
@@ -44,22 +59,41 @@ class QMixer(nn.Module):
         hidden = torch.relu(torch.bmm(agent_qs.view(batch_size, 1, self.n_agents), w1) + b1)
         w2 = torch.abs(self.hyper_w2(states)).view(batch_size, self.mixing_dim, 1)
         b2 = self.hyper_b2(states).view(batch_size, 1, 1)
-        return (torch.bmm(hidden, w2) + b2).view(batch_size)
+        q_total = torch.bmm(hidden, w2) + b2
+        return q_total.view(batch_size)
 
 
 class QMixLearner:
-    def __init__(self, *, n_agents: int, obs_dim: int, action_dim: int, state_dim: int, device: torch.device, hidden_size: int = 128, mixing_dim: int = 32, lr: float = 1e-3, gamma: float = 1.0, batch_size: int = 64, buffer_size: int = 30000):
+    def __init__(
+        self,
+        *,
+        n_agents: int,
+        obs_dim: int,
+        action_dim: int,
+        state_dim: int,
+        device: torch.device,
+        hidden_size: int = 128,
+        mixing_dim: int = 32,
+        lr: float = 1e-3,
+        gamma: float = 1.0,
+        batch_size: int = 64,
+        buffer_size: int = 30000,
+    ):
         self.n_agents = n_agents
         self.action_dim = action_dim
         self.device = device
         self.gamma = gamma
         self.batch_size = batch_size
         self.memory: deque = deque(maxlen=buffer_size)
+
         self.agent_net = AgentQNetwork(obs_dim, action_dim, hidden_size).to(device)
         self.target_agent_net = AgentQNetwork(obs_dim, action_dim, hidden_size).to(device)
         self.mixer = QMixer(n_agents, state_dim, mixing_dim).to(device)
         self.target_mixer = QMixer(n_agents, state_dim, mixing_dim).to(device)
-        self.optimizer = optim.Adam(list(self.agent_net.parameters()) + list(self.mixer.parameters()), lr=lr)
+        self.optimizer = optim.Adam(
+            list(self.agent_net.parameters()) + list(self.mixer.parameters()),
+            lr=lr,
+        )
         self.update_targets()
 
     def update_targets(self) -> None:
@@ -92,21 +126,29 @@ class QMixLearner:
         actions_t = torch.as_tensor(np.array(actions), dtype=torch.long, device=self.device)
         rewards_t = torch.as_tensor(rewards, dtype=torch.float32, device=self.device)
         dones_t = torch.as_tensor(dones, dtype=torch.float32, device=self.device)
+
         batch_size = obs_t.shape[0]
         flat_obs = obs_t.view(batch_size * self.n_agents, -1)
         q_values = self.agent_net(flat_obs).view(batch_size, self.n_agents, self.action_dim)
         chosen_qs = q_values.gather(2, actions_t.unsqueeze(-1)).squeeze(-1)
         q_total = self.mixer(chosen_qs, states_t)
+
         with torch.no_grad():
             flat_next_obs = next_obs_t.view(batch_size * self.n_agents, -1)
-            next_q_values = self.target_agent_net(flat_next_obs).view(batch_size, self.n_agents, self.action_dim)
+            next_q_values = self.target_agent_net(flat_next_obs).view(
+                batch_size, self.n_agents, self.action_dim
+            )
             next_agent_qs = next_q_values.max(dim=2).values
             next_q_total = self.target_mixer(next_agent_qs, next_states_t)
             target = rewards_t + (1.0 - dones_t) * self.gamma * next_q_total
+
         loss = nn.functional.mse_loss(q_total, target)
         self.optimizer.zero_grad()
         loss.backward()
-        nn.utils.clip_grad_norm_(list(self.agent_net.parameters()) + list(self.mixer.parameters()), 10.0)
+        nn.utils.clip_grad_norm_(
+            list(self.agent_net.parameters()) + list(self.mixer.parameters()),
+            10.0,
+        )
         self.optimizer.step()
         return float(loss.item())
 
@@ -117,11 +159,34 @@ def evaluate_qmix(learner: QMixLearner, args: argparse.Namespace, seeds: list[in
         env = RobotEnvironment(make_config(args, seed, "QMIX-2R"))
         observations, _ = env.reset(seed=seed)
         done = False
+        total_actions = 0
+        stay_actions = 0
+        per_agent_total = [0 for _ in env.agents]
+        per_agent_stay = [0 for _ in env.agents]
         while not done:
-            actions = learner.act(obs_dict_to_list(env, observations), epsilon=0.0)
+            obs_list = obs_dict_to_list(env, observations)
+            actions = learner.act(obs_list, epsilon=0.0)
+            for idx, action in enumerate(actions):
+                total_actions += 1
+                per_agent_total[idx] += 1
+                if action == STAY_ACTION:
+                    stay_actions += 1
+                    per_agent_stay[idx] += 1
             observations, _, dones, _ = env.step(actions)
             done = dones["__all__"]
         row = env.episode_summary()
+        row["total_action_count"] = total_actions
+        row["stay_action_count"] = stay_actions
+        row["stay_action_rate"] = stay_actions / max(1, total_actions)
+        row["move_action_rate"] = 1.0 - row["stay_action_rate"]
+        for idx, pos in enumerate(env.robot_positions):
+            row[f"robot{idx + 1}_final"] = pos
+            row[f"robot{idx + 1}_stay_action_rate"] = (
+                per_agent_stay[idx] / max(1, per_agent_total[idx])
+            )
+        row["static_like_policy"] = (
+            row["robot_path_length"] == 0 and row["stay_action_rate"] >= 0.99
+        )
         row["episode"] = len(rows) + 1
         rows.append(row)
     return rows
@@ -133,7 +198,20 @@ def train_qmix(args: argparse.Namespace) -> dict:
     probe_env = RobotEnvironment(make_config(args, args.train_seed, "QMIX-2R"))
     obs_dim = probe_env.observation_space.shape[0]
     state_dim = obs_dim * probe_env.num_agents
-    learner = QMixLearner(n_agents=probe_env.num_agents, obs_dim=obs_dim, action_dim=probe_env.action_space.n, state_dim=state_dim, device=device, hidden_size=args.hidden_size, mixing_dim=args.mixing_dim, lr=args.lr, gamma=args.gamma, batch_size=args.batch_size, buffer_size=args.buffer_size)
+    learner = QMixLearner(
+        n_agents=probe_env.num_agents,
+        obs_dim=obs_dim,
+        action_dim=probe_env.action_space.n,
+        state_dim=state_dim,
+        device=device,
+        hidden_size=args.hidden_size,
+        mixing_dim=args.mixing_dim,
+        lr=args.lr,
+        gamma=args.gamma,
+        batch_size=args.batch_size,
+        buffer_size=args.buffer_size,
+    )
+
     output_dir = Path(args.output_dir)
     model_dir = Path(args.model_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -161,32 +239,76 @@ def train_qmix(args: argparse.Namespace) -> dict:
             if loss is not None:
                 losses.append(loss)
             observations = next_observations
+
         if episode % args.target_update == 0:
             learner.update_targets()
         epsilon = max(args.epsilon_min, epsilon * args.epsilon_decay)
+
         row = env.episode_summary()
-        row.update({"episode": episode, "epsilon": epsilon, "loss": float(np.mean(losses)) if losses else None, "device": str(device)})
+        row.update({
+            "episode": episode,
+            "epsilon": epsilon,
+            "loss": float(np.mean(losses)) if losses else None,
+            "device": str(device),
+        })
         train_rows.append(row)
         if episode == 1 or episode % args.log_interval == 0:
-            print(f"QMIX episode {episode}/{args.episodes}: t80={row['t80']} return={row['mean_episode_return']} invalid={row['invalid_action_count']} eps={epsilon:.3f}")
+            print(
+                f"QMIX episode {episode}/{args.episodes}: "
+                f"t80={row['t80']} return={row['mean_episode_return']} "
+                f"invalid={row['invalid_action_count']} eps={epsilon:.3f}"
+            )
 
-    torch.save({"agent_net": learner.agent_net.state_dict(), "mixer": learner.mixer.state_dict(), "config": vars(args)}, model_dir / "qmix_model.pth")
+    torch.save(
+        {
+            "agent_net": learner.agent_net.state_dict(),
+            "mixer": learner.mixer.state_dict(),
+            "config": vars(args),
+        },
+        model_dir / "qmix_model.pth",
+    )
+
     eval_seeds = list(range(args.eval_seed_start, args.eval_seed_start + args.eval_seeds))
     eval_rows = evaluate_qmix(learner, args, eval_seeds)
     static_rows = static_policy_summary(args, eval_seeds)
+
     stem = f"qmix_{args.scenario}_n{args.num_persons}_ep{args.episodes}"
-    write_csv(output_dir / f"{stem}_train.csv", train_rows)
-    write_csv(output_dir / f"{stem}_eval.csv", eval_rows)
-    write_csv(output_dir / f"{stem}_static_eval.csv", static_rows)
+    train_path = output_dir / f"{stem}_train.csv"
+    eval_path = output_dir / f"{stem}_eval.csv"
+    static_path = output_dir / f"{stem}_static_eval.csv"
+    write_csv(train_path, train_rows)
+    write_csv(eval_path, eval_rows)
+    write_csv(static_path, static_rows)
     plot_training_curve(output_dir / f"{stem}_curve.png", train_rows, f"QMIX-2R {args.scenario}")
+
     train_summary = summarize_convergence(train_rows, window=max(5, min(20, args.episodes // 3)))
     eval_summary = summarize_convergence(eval_rows, window=max(1, len(eval_rows)))
     static_summary = summarize_convergence(static_rows, window=max(1, len(static_rows)))
     report_path = output_dir / f"{stem}_report.md"
-    report_path.write_text("\n".join([
-        "# QMIX-2R Training Report", "", f"- Scenario: `{args.scenario}`", f"- Episodes: `{args.episodes}`", f"- Device: `{device}`", f"- Train summary: `{train_summary}`", f"- Greedy eval summary: `{eval_summary}`", f"- Static same-start eval summary: `{static_summary}`", "", "This is a short convergence check, not a final paper-scale run.",
-    ]), encoding="utf-8")
-    return {"train_rows": train_rows, "eval_rows": eval_rows, "static_rows": static_rows, "train_summary": train_summary, "eval_summary": eval_summary, "static_summary": static_summary, "report_path": report_path}
+    report_path.write_text(
+        "\n".join([
+            "# QMIX-2R Training Report",
+            "",
+            f"- Scenario: `{args.scenario}`",
+            f"- Episodes: `{args.episodes}`",
+            f"- Device: `{device}`",
+            f"- Train summary: `{train_summary}`",
+            f"- Greedy eval summary: `{eval_summary}`",
+            f"- Static same-start eval summary: `{static_summary}`",
+            "",
+            "This is a short convergence check, not a final paper-scale run.",
+        ]),
+        encoding="utf-8",
+    )
+    return {
+        "train_rows": train_rows,
+        "eval_rows": eval_rows,
+        "static_rows": static_rows,
+        "train_summary": train_summary,
+        "eval_summary": eval_summary,
+        "static_summary": static_summary,
+        "report_path": report_path,
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
