@@ -10,16 +10,25 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from robot_env import RobotEnvironment
-from rl_common import make_config, plot_training_curve, set_global_seeds, static_policy_summary, summarize_convergence, write_csv
+from robot_env import RobotEnvironment, STAY_ACTION
+from rl_common import (
+    make_config,
+    plot_training_curve,
+    set_global_seeds,
+    static_policy_summary,
+    summarize_convergence,
+    write_csv,
+)
 
 
 class QNetwork(nn.Module):
     def __init__(self, state_size: int, action_size: int, hidden_size: int = 128):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(state_size, hidden_size), nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size), nn.ReLU(),
+            nn.Linear(state_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
             nn.Linear(hidden_size, action_size),
         )
 
@@ -28,7 +37,18 @@ class QNetwork(nn.Module):
 
 
 class DQNAgent:
-    def __init__(self, state_size: int, action_size: int, *, device: torch.device, hidden_size: int = 128, lr: float = 1e-3, gamma: float = 1.0, batch_size: int = 64, buffer_size: int = 20000):
+    def __init__(
+        self,
+        state_size: int,
+        action_size: int,
+        *,
+        device: torch.device,
+        hidden_size: int = 128,
+        lr: float = 1e-3,
+        gamma: float = 1.0,
+        batch_size: int = 64,
+        buffer_size: int = 20000,
+    ):
         self.action_size = action_size
         self.gamma = gamma
         self.batch_size = batch_size
@@ -62,6 +82,7 @@ class DQNAgent:
         actions_t = torch.as_tensor(actions, dtype=torch.long, device=self.device)
         rewards_t = torch.as_tensor(rewards, dtype=torch.float32, device=self.device)
         dones_t = torch.as_tensor(dones, dtype=torch.float32, device=self.device)
+
         current_q = self.model(states_t).gather(1, actions_t.unsqueeze(1)).squeeze(1)
         with torch.no_grad():
             next_q = self.target_model(next_states_t).max(dim=1).values
@@ -80,11 +101,34 @@ def evaluate_idqn(agents: list[DQNAgent], args: argparse.Namespace, seeds: list[
         env = RobotEnvironment(make_config(args, seed, "IDQN-2R"))
         observations, _ = env.reset(seed=seed)
         done = False
+        total_actions = 0
+        stay_actions = 0
+        per_agent_total = [0 for _ in env.agents]
+        per_agent_stay = [0 for _ in env.agents]
         while not done:
-            actions = {agent_id: agents[idx].act(observations[agent_id], epsilon=0.0) for idx, agent_id in enumerate(env.agents)}
+            actions = {}
+            for idx, agent_id in enumerate(env.agents):
+                actions[agent_id] = agents[idx].act(observations[agent_id], epsilon=0.0)
+                total_actions += 1
+                per_agent_total[idx] += 1
+                if actions[agent_id] == STAY_ACTION:
+                    stay_actions += 1
+                    per_agent_stay[idx] += 1
             observations, _, dones, _ = env.step(actions)
             done = dones["__all__"]
         row = env.episode_summary()
+        row["total_action_count"] = total_actions
+        row["stay_action_count"] = stay_actions
+        row["stay_action_rate"] = stay_actions / max(1, total_actions)
+        row["move_action_rate"] = 1.0 - row["stay_action_rate"]
+        for idx, pos in enumerate(env.robot_positions):
+            row[f"robot{idx + 1}_final"] = pos
+            row[f"robot{idx + 1}_stay_action_rate"] = (
+                per_agent_stay[idx] / max(1, per_agent_total[idx])
+            )
+        row["static_like_policy"] = (
+            row["robot_path_length"] == 0 and row["stay_action_rate"] >= 0.99
+        )
         row["episode"] = len(rows) + 1
         rows.append(row)
     return rows
@@ -96,12 +140,18 @@ def train_idqn(args: argparse.Namespace) -> dict:
     probe_env = RobotEnvironment(make_config(args, args.train_seed, "IDQN-2R"))
     agents = [
         DQNAgent(
-            probe_env.observation_space.shape[0], probe_env.action_space.n,
-            device=device, hidden_size=args.hidden_size, lr=args.lr, gamma=args.gamma,
-            batch_size=args.batch_size, buffer_size=args.buffer_size,
+            probe_env.observation_space.shape[0],
+            probe_env.action_space.n,
+            device=device,
+            hidden_size=args.hidden_size,
+            lr=args.lr,
+            gamma=args.gamma,
+            batch_size=args.batch_size,
+            buffer_size=args.buffer_size,
         )
         for _ in probe_env.agents
     ]
+
     output_dir = Path(args.output_dir)
     model_dir = Path(args.model_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -116,24 +166,43 @@ def train_idqn(args: argparse.Namespace) -> dict:
         done = False
         losses = []
         while not done:
-            actions = {agent_id: agents[idx].act(observations[agent_id], epsilon) for idx, agent_id in enumerate(env.agents)}
+            actions = {}
+            for idx, agent_id in enumerate(env.agents):
+                actions[agent_id] = agents[idx].act(observations[agent_id], epsilon)
             next_observations, rewards, dones, _ = env.step(actions)
             done = dones["__all__"]
             for idx, agent_id in enumerate(env.agents):
-                agents[idx].remember(observations[agent_id], actions[agent_id], rewards[agent_id], next_observations[agent_id], float(done))
+                agents[idx].remember(
+                    observations[agent_id],
+                    actions[agent_id],
+                    rewards[agent_id],
+                    next_observations[agent_id],
+                    float(done),
+                )
                 loss = agents[idx].replay()
                 if loss is not None:
                     losses.append(loss)
             observations = next_observations
+
         if episode % args.target_update == 0:
             for agent in agents:
                 agent.update_target_network()
         epsilon = max(args.epsilon_min, epsilon * args.epsilon_decay)
+
         row = env.episode_summary()
-        row.update({"episode": episode, "epsilon": epsilon, "loss": float(np.mean(losses)) if losses else None, "device": str(device)})
+        row.update({
+            "episode": episode,
+            "epsilon": epsilon,
+            "loss": float(np.mean(losses)) if losses else None,
+            "device": str(device),
+        })
         train_rows.append(row)
         if episode == 1 or episode % args.log_interval == 0:
-            print(f"IDQN episode {episode}/{args.episodes}: t80={row['t80']} return={row['mean_episode_return']} invalid={row['invalid_action_count']} eps={epsilon:.3f}")
+            print(
+                f"IDQN episode {episode}/{args.episodes}: "
+                f"t80={row['t80']} return={row['mean_episode_return']} "
+                f"invalid={row['invalid_action_count']} eps={epsilon:.3f}"
+            )
 
     for idx, agent in enumerate(agents):
         torch.save(agent.model.state_dict(), model_dir / f"idqn_robot_{idx}.pth")
@@ -141,19 +210,44 @@ def train_idqn(args: argparse.Namespace) -> dict:
     eval_seeds = list(range(args.eval_seed_start, args.eval_seed_start + args.eval_seeds))
     eval_rows = evaluate_idqn(agents, args, eval_seeds)
     static_rows = static_policy_summary(args, eval_seeds)
+
     stem = f"idqn_{args.scenario}_n{args.num_persons}_ep{args.episodes}"
-    write_csv(output_dir / f"{stem}_train.csv", train_rows)
-    write_csv(output_dir / f"{stem}_eval.csv", eval_rows)
-    write_csv(output_dir / f"{stem}_static_eval.csv", static_rows)
+    train_path = output_dir / f"{stem}_train.csv"
+    eval_path = output_dir / f"{stem}_eval.csv"
+    static_path = output_dir / f"{stem}_static_eval.csv"
+    write_csv(train_path, train_rows)
+    write_csv(eval_path, eval_rows)
+    write_csv(static_path, static_rows)
     plot_training_curve(output_dir / f"{stem}_curve.png", train_rows, f"IDQN-2R {args.scenario}")
+
     train_summary = summarize_convergence(train_rows, window=max(5, min(20, args.episodes // 3)))
     eval_summary = summarize_convergence(eval_rows, window=max(1, len(eval_rows)))
     static_summary = summarize_convergence(static_rows, window=max(1, len(static_rows)))
     report_path = output_dir / f"{stem}_report.md"
-    report_path.write_text("\n".join([
-        "# IDQN-2R Training Report", "", f"- Scenario: `{args.scenario}`", f"- Episodes: `{args.episodes}`", f"- Device: `{device}`", f"- Train summary: `{train_summary}`", f"- Greedy eval summary: `{eval_summary}`", f"- Static same-start eval summary: `{static_summary}`", "", "This is a short convergence check, not a final paper-scale run.",
-    ]), encoding="utf-8")
-    return {"train_rows": train_rows, "eval_rows": eval_rows, "static_rows": static_rows, "train_summary": train_summary, "eval_summary": eval_summary, "static_summary": static_summary, "report_path": report_path}
+    report_path.write_text(
+        "\n".join([
+            "# IDQN-2R Training Report",
+            "",
+            f"- Scenario: `{args.scenario}`",
+            f"- Episodes: `{args.episodes}`",
+            f"- Device: `{device}`",
+            f"- Train summary: `{train_summary}`",
+            f"- Greedy eval summary: `{eval_summary}`",
+            f"- Static same-start eval summary: `{static_summary}`",
+            "",
+            "This is a short convergence check, not a final paper-scale run.",
+        ]),
+        encoding="utf-8",
+    )
+    return {
+        "train_rows": train_rows,
+        "eval_rows": eval_rows,
+        "static_rows": static_rows,
+        "train_summary": train_summary,
+        "eval_summary": eval_summary,
+        "static_summary": static_summary,
+        "report_path": report_path,
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
