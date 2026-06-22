@@ -153,6 +153,87 @@ class QMixLearner:
         return float(loss.item())
 
 
+def collect_static_bc_observations(
+    args: argparse.Namespace,
+    *,
+    seeds: list[int],
+    algorithm: str,
+) -> np.ndarray:
+    """Collect all agent observations from fixed robots executing STAY."""
+
+    rows: list[np.ndarray] = []
+    for seed in seeds:
+        env = RobotEnvironment(make_config(args, seed, algorithm))
+        observations, _ = env.reset(seed=seed)
+        done = False
+        while not done:
+            rows.extend(obs.copy() for obs in obs_dict_to_list(env, observations))
+            observations, _, dones, _ = env.step(
+                [STAY_ACTION for _ in env.agents]
+            )
+            done = dones["__all__"]
+    return np.asarray(rows, dtype=np.float32)
+
+
+def pretrain_qmix_to_static_stay(
+    learner: QMixLearner,
+    args: argparse.Namespace,
+    *,
+    device: torch.device,
+) -> dict[str, float | int | None]:
+    if args.bc_pretrain_steps <= 0:
+        return {
+            "bc_pretrain_steps": 0,
+            "bc_dataset_rows": 0,
+            "bc_final_loss": None,
+        }
+
+    seeds = list(range(args.bc_seed_start, args.bc_seed_start + args.bc_seeds))
+    observations = collect_static_bc_observations(
+        args,
+        seeds=seeds,
+        algorithm="QMIX-BC",
+    )
+    if len(observations) == 0:
+        return {
+            "bc_pretrain_steps": args.bc_pretrain_steps,
+            "bc_dataset_rows": 0,
+            "bc_final_loss": None,
+        }
+
+    optimizer = optim.Adam(learner.agent_net.parameters(), lr=args.bc_lr)
+    rng = np.random.default_rng(args.train_seed + 15485863)
+    batch_size = min(args.bc_batch_size, len(observations))
+    losses: list[float] = []
+    for _ in range(args.bc_pretrain_steps):
+        indices = rng.integers(0, len(observations), size=batch_size)
+        obs_t = torch.as_tensor(
+            observations[indices],
+            dtype=torch.float32,
+            device=device,
+        )
+        targets_t = torch.full(
+            (batch_size,),
+            STAY_ACTION,
+            dtype=torch.long,
+            device=device,
+        )
+        logits = learner.agent_net(obs_t)
+        loss = nn.functional.cross_entropy(logits, targets_t)
+        optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(learner.agent_net.parameters(), 10.0)
+        optimizer.step()
+        losses.append(float(loss.item()))
+    learner.update_targets()
+
+    return {
+        "bc_pretrain_steps": args.bc_pretrain_steps,
+        "bc_dataset_rows": int(len(observations)),
+        "bc_final_loss": float(losses[-1]) if losses else None,
+    }
+
+
 def evaluate_qmix(learner: QMixLearner, args: argparse.Namespace, seeds: list[int]) -> list[dict]:
     rows = []
     for seed in seeds:
@@ -217,6 +298,8 @@ def train_qmix(args: argparse.Namespace) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     model_dir.mkdir(parents=True, exist_ok=True)
 
+    bc_summary = pretrain_qmix_to_static_stay(learner, args, device=device)
+
     epsilon = args.epsilon_start
     train_rows = []
     for episode in range(1, args.episodes + 1):
@@ -250,6 +333,9 @@ def train_qmix(args: argparse.Namespace) -> dict:
             "epsilon": epsilon,
             "loss": float(np.mean(losses)) if losses else None,
             "device": str(device),
+            "bc_pretrain_steps": bc_summary["bc_pretrain_steps"],
+            "bc_dataset_rows": bc_summary["bc_dataset_rows"],
+            "bc_final_loss": bc_summary["bc_final_loss"],
         })
         train_rows.append(row)
         if episode == 1 or episode % args.log_interval == 0:
@@ -292,6 +378,7 @@ def train_qmix(args: argparse.Namespace) -> dict:
             f"- Scenario: `{args.scenario}`",
             f"- Episodes: `{args.episodes}`",
             f"- Device: `{device}`",
+            f"- BC pretrain summary: `{bc_summary}`",
             f"- Train summary: `{train_summary}`",
             f"- Greedy eval summary: `{eval_summary}`",
             f"- Static same-start eval summary: `{static_summary}`",
@@ -307,6 +394,7 @@ def train_qmix(args: argparse.Namespace) -> dict:
         "train_summary": train_summary,
         "eval_summary": eval_summary,
         "static_summary": static_summary,
+        "bc_summary": bc_summary,
         "report_path": report_path,
     }
 
@@ -338,6 +426,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epsilon-min", type=float, default=0.05)
     parser.add_argument("--epsilon-decay", type=float, default=0.97)
     parser.add_argument("--target-update", type=int, default=10)
+    parser.add_argument("--bc-pretrain-steps", type=int, default=0)
+    parser.add_argument("--bc-seed-start", type=int, default=21000)
+    parser.add_argument("--bc-seeds", type=int, default=20)
+    parser.add_argument("--bc-batch-size", type=int, default=256)
+    parser.add_argument("--bc-lr", type=float, default=1e-3)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--device", default="")
     parser.add_argument("--output-dir", default="result/visual")

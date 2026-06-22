@@ -18,7 +18,19 @@ import numpy as np
 from rl_common import SCENARIOS, write_csv
 
 
-METHODS = ("Static-2R", "IDQN-2R", "QMIX-2R")
+BASE_METHODS = ("Static-2R", "IDQN-2R", "QMIX-2R")
+
+
+def idqn_method_label(args: argparse.Namespace) -> str:
+    return "IDQN-BC" if args.bc_pretrain_steps > 0 else "IDQN-2R"
+
+
+def qmix_method_label(args: argparse.Namespace) -> str:
+    return "QMIX-BC" if args.bc_pretrain_steps > 0 else "QMIX-2R"
+
+
+def method_order(args: argparse.Namespace) -> tuple[str, str, str]:
+    return ("Static-2R", idqn_method_label(args), qmix_method_label(args))
 
 
 def str_to_bool(value: Any) -> bool:
@@ -147,6 +159,22 @@ def run_idqn(args: argparse.Namespace, scenario: str, train_seed: int) -> None:
         str(args.robot_repulsion_amplitude),
         "--robot-friction-beta",
         str(args.robot_friction_beta),
+        "--epsilon-start",
+        str(args.epsilon_start),
+        "--epsilon-min",
+        str(args.epsilon_min),
+        "--epsilon-decay",
+        str(args.epsilon_decay),
+        "--bc-pretrain-steps",
+        str(args.bc_pretrain_steps),
+        "--bc-seed-start",
+        str(args.bc_seed_start),
+        "--bc-seeds",
+        str(args.bc_seeds),
+        "--bc-batch-size",
+        str(args.bc_batch_size),
+        "--bc-lr",
+        str(args.bc_lr),
         "--log-interval",
         str(args.log_interval),
         "--output-dir",
@@ -194,6 +222,22 @@ def run_qmix(args: argparse.Namespace, scenario: str, train_seed: int) -> None:
         str(args.robot_repulsion_amplitude),
         "--robot-friction-beta",
         str(args.robot_friction_beta),
+        "--epsilon-start",
+        str(args.epsilon_start),
+        "--epsilon-min",
+        str(args.epsilon_min),
+        "--epsilon-decay",
+        str(args.epsilon_decay),
+        "--bc-pretrain-steps",
+        str(args.bc_pretrain_steps),
+        "--bc-seed-start",
+        str(args.bc_seed_start),
+        "--bc-seeds",
+        str(args.bc_seeds),
+        "--bc-batch-size",
+        str(args.bc_batch_size),
+        "--bc-lr",
+        str(args.bc_lr),
         "--log-interval",
         str(args.log_interval),
         "--output-dir",
@@ -232,11 +276,15 @@ def std(values: list[float]) -> float | None:
     return float(np.std(clean, ddof=1)) if len(clean) > 1 else 0.0 if clean else None
 
 
-def summarize_rows(rows: list[dict[str, Any]], static_mean_by_scenario: dict[str, float]) -> list[dict[str, Any]]:
+def summarize_rows(
+    rows: list[dict[str, Any]],
+    static_mean_by_scenario: dict[str, float],
+    methods: tuple[str, str, str],
+) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for scenario in SCENARIOS:
         scenario_rows = [row for row in rows if row["scenario_id"] == scenario]
-        for method in METHODS:
+        for method in methods:
             method_rows = [row for row in scenario_rows if row["method"] == method]
             if not method_rows:
                 continue
@@ -278,8 +326,8 @@ def collect_rows(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[d
             raise FileNotFoundError("missing expected outputs:\n" + "\n".join(missing))
 
         static_rows = load_method_rows(outputs["static"], "Static-2R", scenario)
-        idqn_rows = load_method_rows(outputs["idqn"], "IDQN-2R", scenario)
-        qmix_rows = load_method_rows(outputs["qmix"], "QMIX-2R", scenario)
+        idqn_rows = load_method_rows(outputs["idqn"], idqn_method_label(args), scenario)
+        qmix_rows = load_method_rows(outputs["qmix"], qmix_method_label(args), scenario)
         scenario_rows = static_rows + idqn_rows + qmix_rows
         all_rows.extend(scenario_rows)
         static_t80 = [
@@ -289,7 +337,7 @@ def collect_rows(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[d
         ]
         static_mean_by_scenario[scenario] = float(np.mean(static_t80))
 
-    summary_rows = summarize_rows(all_rows, static_mean_by_scenario)
+    summary_rows = summarize_rows(all_rows, static_mean_by_scenario, method_order(args))
     return all_rows, summary_rows
 
 
@@ -311,6 +359,8 @@ def write_report(args: argparse.Namespace, summary_rows: list[dict[str, Any]], r
         f"- People: `{args.num_persons}`",
         f"- Eval seeds: `{args.eval_seed_start}` to `{args.eval_seed_start + args.eval_seeds - 1}`",
         f"- Training episodes per learned method/scenario: `{args.episodes}`",
+        f"- BC pretrain steps: `{args.bc_pretrain_steps}`",
+        f"- BC static seeds: `{args.bc_seed_start}` to `{args.bc_seed_start + args.bc_seeds - 1}`",
         f"- Reward/termination: per-agent `-1` per step, terminate at `T80`",
         f"- Friction mu: `{args.friction_mu}`",
         "",
@@ -333,7 +383,7 @@ def write_report(args: argparse.Namespace, summary_rows: list[dict[str, Any]], r
         "|---|---|---:|---:|---:|---:|---:|---:|",
     ])
     for scenario in args.scenarios:
-        for method in METHODS:
+        for method in method_order(args):
             matches = [
                 row for row in summary_rows
                 if row["scenario_id"] == scenario and row["method"] == method
@@ -352,7 +402,7 @@ def write_report(args: argparse.Namespace, summary_rows: list[dict[str, Any]], r
 
     learned_rows = [
         row for row in summary_rows
-        if row["method"] in {"IDQN-2R", "QMIX-2R"}
+        if row["method"] in {idqn_method_label(args), qmix_method_label(args)}
     ]
     improved = [
         row for row in learned_rows
@@ -390,7 +440,8 @@ def write_report(args: argparse.Namespace, summary_rows: list[dict[str, Any]], r
         scenario = best_static["scenario_id"]
         learned = [
             row for row in summary_rows
-            if row["scenario_id"] == scenario and row["method"] in {"IDQN-2R", "QMIX-2R"}
+            if row["scenario_id"] == scenario
+            and row["method"] in {idqn_method_label(args), qmix_method_label(args)}
         ]
         lines.extend([
             "",
@@ -421,6 +472,8 @@ def plot_summary(args: argparse.Namespace, summary_rows: list[dict[str, Any]]) -
         "Static-2R": "#59A14F",
         "IDQN-2R": "#4E79A7",
         "QMIX-2R": "#F28E2B",
+        "IDQN-BC": "#4E79A7",
+        "QMIX-BC": "#F28E2B",
     }
 
     plt.rcParams.update({
@@ -434,7 +487,7 @@ def plot_summary(args: argparse.Namespace, summary_rows: list[dict[str, Any]]) -
     })
 
     fig, ax = plt.subplots(figsize=(9, 4))
-    for offset, method in enumerate(METHODS):
+    for offset, method in enumerate(method_order(args)):
         values = []
         errors = []
         for scenario in scenarios:
@@ -454,7 +507,7 @@ def plot_summary(args: argparse.Namespace, summary_rows: list[dict[str, Any]]) -
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(9, 4))
-    for offset, method in enumerate(("IDQN-2R", "QMIX-2R")):
+    for offset, method in enumerate((idqn_method_label(args), qmix_method_label(args))):
         values = []
         for scenario in scenarios:
             row = next(
@@ -489,6 +542,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot-repulsion-cutoff", type=float, default=5.0)
     parser.add_argument("--robot-repulsion-amplitude", type=float, default=0.25)
     parser.add_argument("--robot-friction-beta", type=float, default=1.0)
+    parser.add_argument("--epsilon-start", type=float, default=1.0)
+    parser.add_argument("--epsilon-min", type=float, default=0.05)
+    parser.add_argument("--epsilon-decay", type=float, default=0.97)
+    parser.add_argument("--bc-pretrain-steps", type=int, default=0)
+    parser.add_argument("--bc-seed-start", type=int, default=21000)
+    parser.add_argument("--bc-seeds", type=int, default=20)
+    parser.add_argument("--bc-batch-size", type=int, default=256)
+    parser.add_argument("--bc-lr", type=float, default=1e-3)
     parser.add_argument("--log-interval", type=int, default=50)
     parser.add_argument("--device", default="")
     parser.add_argument("--output-dir", type=Path, default=Path("result/visual/position_comparison_ep500"))

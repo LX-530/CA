@@ -96,6 +96,23 @@ def moving_average(values: list[float], window: int = 10) -> list[float]:
 
 def plot_training_curve(path: Path, rows: list[dict[str, Any]], title: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        plt.rcParams.update({
+            "font.size": 9,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "axes.grid": True,
+            "grid.alpha": 0.25,
+            "savefig.dpi": 300,
+            "savefig.bbox": "tight",
+        })
+        fig, ax = plt.subplots(figsize=(7, 3))
+        ax.text(0.5, 0.5, "No RL fine-tuning episodes", ha="center", va="center")
+        ax.set_axis_off()
+        ax.set_title(title)
+        fig.savefig(path)
+        plt.close(fig)
+        return
     episodes = [int(row["episode"]) for row in rows]
     t80 = [float(row["t80"]) if row.get("t80") not in (None, "") else np.nan for row in rows]
     invalid = [float(row.get("invalid_action_count", 0)) for row in rows]
@@ -150,7 +167,7 @@ def static_policy_summary(args: Any, seeds: list[int]) -> list[dict[str, Any]]:
     rows = []
     for seed in seeds:
         env = RobotEnvironment(make_config(args, seed, "Static-2R"))
-        env.reset(seed=seed)
+        obs, _ = env.reset(seed=seed)
         done = False
         while not done:
             _, _, dones, _ = env.step([STAY_ACTION for _ in env.agents])

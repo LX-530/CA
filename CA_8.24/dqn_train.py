@@ -95,6 +95,92 @@ class DQNAgent:
         return float(loss.item())
 
 
+def collect_static_bc_observations(
+    args: argparse.Namespace,
+    *,
+    seeds: list[int],
+    algorithm: str,
+) -> list[np.ndarray]:
+    """Collect per-agent observations from fixed robots executing STAY."""
+
+    probe_env = RobotEnvironment(make_config(args, seeds[0], algorithm))
+    observations_by_agent: list[list[np.ndarray]] = [
+        [] for _ in probe_env.agents
+    ]
+    for seed in seeds:
+        env = RobotEnvironment(make_config(args, seed, algorithm))
+        observations, _ = env.reset(seed=seed)
+        done = False
+        while not done:
+            for idx, agent_id in enumerate(env.agents):
+                observations_by_agent[idx].append(observations[agent_id].copy())
+            observations, _, dones, _ = env.step(
+                [STAY_ACTION for _ in env.agents]
+            )
+            done = dones["__all__"]
+
+    return [
+        np.asarray(agent_observations, dtype=np.float32)
+        for agent_observations in observations_by_agent
+    ]
+
+
+def pretrain_idqn_to_static_stay(
+    agents: list[DQNAgent],
+    args: argparse.Namespace,
+    *,
+    device: torch.device,
+) -> dict[str, float | int | None]:
+    if args.bc_pretrain_steps <= 0:
+        return {
+            "bc_pretrain_steps": 0,
+            "bc_dataset_rows": 0,
+            "bc_final_loss": None,
+        }
+
+    seeds = list(range(args.bc_seed_start, args.bc_seed_start + args.bc_seeds))
+    observations_by_agent = collect_static_bc_observations(
+        args,
+        seeds=seeds,
+        algorithm="IDQN-BC",
+    )
+    rng = np.random.default_rng(args.train_seed + 7919)
+    losses: list[float] = []
+
+    for agent, observations in zip(agents, observations_by_agent):
+        if len(observations) == 0:
+            continue
+        optimizer = optim.Adam(agent.model.parameters(), lr=args.bc_lr)
+        batch_size = min(args.bc_batch_size, len(observations))
+        for _ in range(args.bc_pretrain_steps):
+            indices = rng.integers(0, len(observations), size=batch_size)
+            states_t = torch.as_tensor(
+                observations[indices],
+                dtype=torch.float32,
+                device=device,
+            )
+            targets_t = torch.full(
+                (batch_size,),
+                STAY_ACTION,
+                dtype=torch.long,
+                device=device,
+            )
+            logits = agent.model(states_t)
+            loss = nn.functional.cross_entropy(logits, targets_t)
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(agent.model.parameters(), 10.0)
+            optimizer.step()
+            losses.append(float(loss.item()))
+        agent.update_target_network()
+
+    return {
+        "bc_pretrain_steps": args.bc_pretrain_steps,
+        "bc_dataset_rows": int(sum(len(items) for items in observations_by_agent)),
+        "bc_final_loss": float(np.mean(losses[-len(agents):])) if losses else None,
+    }
+
+
 def evaluate_idqn(agents: list[DQNAgent], args: argparse.Namespace, seeds: list[int]) -> list[dict]:
     rows = []
     for seed in seeds:
@@ -157,6 +243,8 @@ def train_idqn(args: argparse.Namespace) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     model_dir.mkdir(parents=True, exist_ok=True)
 
+    bc_summary = pretrain_idqn_to_static_stay(agents, args, device=device)
+
     epsilon = args.epsilon_start
     train_rows = []
     for episode in range(1, args.episodes + 1):
@@ -195,6 +283,9 @@ def train_idqn(args: argparse.Namespace) -> dict:
             "epsilon": epsilon,
             "loss": float(np.mean(losses)) if losses else None,
             "device": str(device),
+            "bc_pretrain_steps": bc_summary["bc_pretrain_steps"],
+            "bc_dataset_rows": bc_summary["bc_dataset_rows"],
+            "bc_final_loss": bc_summary["bc_final_loss"],
         })
         train_rows.append(row)
         if episode == 1 or episode % args.log_interval == 0:
@@ -231,6 +322,7 @@ def train_idqn(args: argparse.Namespace) -> dict:
             f"- Scenario: `{args.scenario}`",
             f"- Episodes: `{args.episodes}`",
             f"- Device: `{device}`",
+            f"- BC pretrain summary: `{bc_summary}`",
             f"- Train summary: `{train_summary}`",
             f"- Greedy eval summary: `{eval_summary}`",
             f"- Static same-start eval summary: `{static_summary}`",
@@ -246,6 +338,7 @@ def train_idqn(args: argparse.Namespace) -> dict:
         "train_summary": train_summary,
         "eval_summary": eval_summary,
         "static_summary": static_summary,
+        "bc_summary": bc_summary,
         "report_path": report_path,
     }
 
@@ -276,6 +369,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epsilon-min", type=float, default=0.05)
     parser.add_argument("--epsilon-decay", type=float, default=0.97)
     parser.add_argument("--target-update", type=int, default=10)
+    parser.add_argument("--bc-pretrain-steps", type=int, default=0)
+    parser.add_argument("--bc-seed-start", type=int, default=21000)
+    parser.add_argument("--bc-seeds", type=int, default=20)
+    parser.add_argument("--bc-batch-size", type=int, default=256)
+    parser.add_argument("--bc-lr", type=float, default=1e-3)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--device", default="")
     parser.add_argument("--output-dir", default="result/visual")
