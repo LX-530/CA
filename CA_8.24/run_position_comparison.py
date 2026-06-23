@@ -15,6 +15,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+from robot_env import RobotEnvConfig, RobotEnvironment
 from rl_common import SCENARIOS, write_csv
 
 
@@ -22,15 +23,91 @@ BASE_METHODS = ("Static-2R", "IDQN-2R", "QMIX-2R")
 
 
 def idqn_method_label(args: argparse.Namespace) -> str:
-    return "IDQN-BC" if args.bc_pretrain_steps > 0 else "IDQN-2R"
+    has_bc = idqn_bc_steps(args) > 0
+    has_reg = idqn_stay_weight(args) > 0.0
+    if has_bc and has_reg:
+        return "IDQN-BC+StayReg"
+    if has_bc:
+        return "IDQN-BC"
+    if has_reg:
+        return "IDQN-StayReg"
+    return "IDQN-2R"
 
 
 def qmix_method_label(args: argparse.Namespace) -> str:
-    return "QMIX-BC" if args.bc_pretrain_steps > 0 else "QMIX-2R"
+    has_bc = qmix_bc_steps(args) > 0
+    has_reg = qmix_stay_weight(args) > 0.0
+    if has_bc and has_reg:
+        return "QMIX-BC+StayReg"
+    if has_bc:
+        return "QMIX-BC"
+    if has_reg:
+        return "QMIX-StayReg"
+    return "QMIX-2R"
 
 
-def method_order(args: argparse.Namespace) -> tuple[str, str, str]:
-    return ("Static-2R", idqn_method_label(args), qmix_method_label(args))
+def method_order(args: argparse.Namespace) -> tuple[str, str, str, str]:
+    return ("No-Robot", "Static-2R", idqn_method_label(args), qmix_method_label(args))
+
+
+def idqn_stay_weight(args: argparse.Namespace) -> float:
+    value = getattr(args, "idqn_stay_regularization_weight", None)
+    return float(args.stay_regularization_weight if value is None else value)
+
+
+def qmix_stay_weight(args: argparse.Namespace) -> float:
+    value = getattr(args, "qmix_stay_regularization_weight", None)
+    return float(args.stay_regularization_weight if value is None else value)
+
+
+def idqn_bc_steps(args: argparse.Namespace) -> int:
+    value = getattr(args, "idqn_bc_pretrain_steps", None)
+    return int(args.bc_pretrain_steps if value is None else value)
+
+
+def qmix_bc_steps(args: argparse.Namespace) -> int:
+    value = getattr(args, "qmix_bc_pretrain_steps", None)
+    return int(args.bc_pretrain_steps if value is None else value)
+
+
+def idqn_lr(args: argparse.Namespace) -> float:
+    value = getattr(args, "idqn_lr", None)
+    return float(args.lr if value is None else value)
+
+
+def qmix_lr(args: argparse.Namespace) -> float:
+    value = getattr(args, "qmix_lr", None)
+    return float(args.lr if value is None else value)
+
+
+def idqn_epsilon_start(args: argparse.Namespace) -> float:
+    value = getattr(args, "idqn_epsilon_start", None)
+    return float(args.epsilon_start if value is None else value)
+
+
+def qmix_epsilon_start(args: argparse.Namespace) -> float:
+    value = getattr(args, "qmix_epsilon_start", None)
+    return float(args.epsilon_start if value is None else value)
+
+
+def idqn_epsilon_min(args: argparse.Namespace) -> float:
+    value = getattr(args, "idqn_epsilon_min", None)
+    return float(args.epsilon_min if value is None else value)
+
+
+def qmix_epsilon_min(args: argparse.Namespace) -> float:
+    value = getattr(args, "qmix_epsilon_min", None)
+    return float(args.epsilon_min if value is None else value)
+
+
+def idqn_epsilon_decay(args: argparse.Namespace) -> float:
+    value = getattr(args, "idqn_epsilon_decay", None)
+    return float(args.epsilon_decay if value is None else value)
+
+
+def qmix_epsilon_decay(args: argparse.Namespace) -> float:
+    value = getattr(args, "qmix_epsilon_decay", None)
+    return float(args.epsilon_decay if value is None else value)
 
 
 def str_to_bool(value: Any) -> bool:
@@ -82,6 +159,10 @@ def static_csv(output_dir: Path, scenario: str, num_persons: int) -> Path:
     return output_dir / f"static_baseline_{scenario}_n{num_persons}_episodes.csv"
 
 
+def no_robot_csv(output_dir: Path, scenario: str, num_persons: int) -> Path:
+    return output_dir / f"no_robot_baseline_{scenario}_n{num_persons}_episodes.csv"
+
+
 def idqn_eval_csv(output_dir: Path, scenario: str, num_persons: int, episodes: int) -> Path:
     return output_dir / f"idqn_{scenario}_n{num_persons}_ep{episodes}_eval.csv"
 
@@ -92,10 +173,50 @@ def qmix_eval_csv(output_dir: Path, scenario: str, num_persons: int, episodes: i
 
 def expected_outputs(output_dir: Path, scenario: str, num_persons: int, episodes: int) -> dict[str, Path]:
     return {
+        "no_robot": no_robot_csv(output_dir, scenario, num_persons),
         "static": static_csv(output_dir, scenario, num_persons),
         "idqn": idqn_eval_csv(output_dir, scenario, num_persons, episodes),
         "qmix": qmix_eval_csv(output_dir, scenario, num_persons, episodes),
     }
+
+
+def run_no_robot(args: argparse.Namespace, scenario: str) -> None:
+    path = no_robot_csv(args.output_dir, scenario, args.num_persons)
+    if args.skip_existing and path.exists():
+        print(f"skip existing no-robot: {path}")
+        return
+    rows = []
+    for offset in range(args.eval_seeds):
+        seed = args.eval_seed_start + offset
+        config = RobotEnvConfig(
+            map_path=getattr(args, "map_path", "map.json"),
+            target_area=tuple(getattr(args, "target_area", (3, 32, 2, 7))),
+            num_persons=args.num_persons,
+            robot_start_positions=[],
+            seed=seed,
+            eval_seed=seed,
+            algorithm="No-Robot",
+            scenario_id=scenario,
+            target_ratio=args.target_ratio,
+            termination_ratio=args.termination_ratio,
+            exit_service_steps=args.exit_service_steps,
+            friction_mu=args.friction_mu,
+            no_progress_limit=500,
+            max_steps_guard=10000,
+            record_step_metrics=False,
+        )
+        env = RobotEnvironment(config)
+        done = False
+        while not done:
+            _, _, dones, _ = env.step([])
+            done = dones["__all__"]
+        row = env.episode_summary()
+        row["episode"] = offset + 1
+        row["robot1_start"] = None
+        row["robot2_start"] = None
+        rows.append(row)
+    write_csv(path, rows)
+    print(f"wrote {len(rows)} no-robot rows to {path}")
 
 
 def run_static(args: argparse.Namespace, scenario: str) -> None:
@@ -118,6 +239,16 @@ def run_static(args: argparse.Namespace, scenario: str) -> None:
         str(args.termination_ratio),
         "--target-ratio",
         str(args.target_ratio),
+        "--friction-mu",
+        str(args.friction_mu),
+        "--exit-service-steps",
+        str(args.exit_service_steps),
+        "--robot-repulsion-cutoff",
+        str(args.robot_repulsion_cutoff),
+        "--robot-repulsion-amplitude",
+        str(args.robot_repulsion_amplitude),
+        "--robot-friction-beta",
+        str(args.robot_friction_beta),
         "--output-dir",
         str(args.output_dir),
     ]
@@ -159,14 +290,18 @@ def run_idqn(args: argparse.Namespace, scenario: str, train_seed: int) -> None:
         str(args.robot_repulsion_amplitude),
         "--robot-friction-beta",
         str(args.robot_friction_beta),
+        "--stay-regularization-weight",
+        str(idqn_stay_weight(args)),
+        "--lr",
+        str(idqn_lr(args)),
         "--epsilon-start",
-        str(args.epsilon_start),
+        str(idqn_epsilon_start(args)),
         "--epsilon-min",
-        str(args.epsilon_min),
+        str(idqn_epsilon_min(args)),
         "--epsilon-decay",
-        str(args.epsilon_decay),
+        str(idqn_epsilon_decay(args)),
         "--bc-pretrain-steps",
-        str(args.bc_pretrain_steps),
+        str(idqn_bc_steps(args)),
         "--bc-seed-start",
         str(args.bc_seed_start),
         "--bc-seeds",
@@ -222,14 +357,18 @@ def run_qmix(args: argparse.Namespace, scenario: str, train_seed: int) -> None:
         str(args.robot_repulsion_amplitude),
         "--robot-friction-beta",
         str(args.robot_friction_beta),
+        "--stay-regularization-weight",
+        str(qmix_stay_weight(args)),
+        "--lr",
+        str(qmix_lr(args)),
         "--epsilon-start",
-        str(args.epsilon_start),
+        str(qmix_epsilon_start(args)),
         "--epsilon-min",
-        str(args.epsilon_min),
+        str(qmix_epsilon_min(args)),
         "--epsilon-decay",
-        str(args.epsilon_decay),
+        str(qmix_epsilon_decay(args)),
         "--bc-pretrain-steps",
-        str(args.bc_pretrain_steps),
+        str(qmix_bc_steps(args)),
         "--bc-seed-start",
         str(args.bc_seed_start),
         "--bc-seeds",
@@ -256,11 +395,11 @@ def load_method_rows(path: Path, method: str, scenario: str) -> list[dict[str, A
         row["method"] = method
         row["algorithm"] = method
         row["scenario_id"] = scenario
-        row["robot_start_positions"] = str(SCENARIOS[scenario])
-        if method == "Static-2R":
+        row["robot_start_positions"] = "[]" if method == "No-Robot" else str(SCENARIOS[scenario])
+        if method in {"No-Robot", "Static-2R"}:
             row["stay_action_rate"] = 1.0
             row["move_action_rate"] = 0.0
-            row["static_like_policy"] = True
+            row["static_like_policy"] = method == "Static-2R"
             row["total_action_count"] = 0
             row["stay_action_count"] = 0
     return rows
@@ -279,7 +418,8 @@ def std(values: list[float]) -> float | None:
 def summarize_rows(
     rows: list[dict[str, Any]],
     static_mean_by_scenario: dict[str, float],
-    methods: tuple[str, str, str],
+    no_robot_mean_by_scenario: dict[str, float],
+    methods: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for scenario in SCENARIOS:
@@ -293,11 +433,12 @@ def summarize_rows(
             success_rate = mean([1.0 if str_to_bool(row.get("success_80")) else 0.0 for row in method_rows])
             mean_t80 = mean(valid_t80)
             static_mean = static_mean_by_scenario.get(scenario)
+            no_robot_mean = no_robot_mean_by_scenario.get(scenario)
             summaries.append(
                 {
                     "scenario_id": scenario,
                     "method": method,
-                    "robot_start_positions": str(SCENARIOS[scenario]),
+                    "robot_start_positions": "[]" if method == "No-Robot" else str(SCENARIOS[scenario]),
                     "episodes": len(method_rows),
                     "success_80_rate": success_rate,
                     "mean_t80": mean_t80,
@@ -305,6 +446,8 @@ def summarize_rows(
                     "median_t80": float(np.median(valid_t80)) if valid_t80 else None,
                     "mean_t80_minus_static": None if mean_t80 is None or static_mean is None else mean_t80 - static_mean,
                     "improvement_vs_static": None if mean_t80 is None or static_mean is None else static_mean - mean_t80,
+                    "mean_t80_minus_no_robot": None if mean_t80 is None or no_robot_mean is None else mean_t80 - no_robot_mean,
+                    "improvement_vs_no_robot": None if mean_t80 is None or no_robot_mean is None else no_robot_mean - mean_t80,
                     "mean_invalid_actions": mean([safe_float(row.get("invalid_action_count")) or 0.0 for row in method_rows]),
                     "mean_robot_path_length": mean([safe_float(row.get("robot_path_length")) or 0.0 for row in method_rows]),
                     "mean_stay_action_rate": mean([safe_float(row.get("stay_action_rate")) or 0.0 for row in method_rows]),
@@ -318,6 +461,7 @@ def summarize_rows(
 def collect_rows(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     all_rows: list[dict[str, Any]] = []
     static_mean_by_scenario: dict[str, float] = {}
+    no_robot_mean_by_scenario: dict[str, float] = {}
 
     for scenario in args.scenarios:
         outputs = expected_outputs(args.output_dir, scenario, args.num_persons, args.episodes)
@@ -325,11 +469,18 @@ def collect_rows(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[d
         if missing:
             raise FileNotFoundError("missing expected outputs:\n" + "\n".join(missing))
 
+        no_robot_rows = load_method_rows(outputs["no_robot"], "No-Robot", scenario)
         static_rows = load_method_rows(outputs["static"], "Static-2R", scenario)
         idqn_rows = load_method_rows(outputs["idqn"], idqn_method_label(args), scenario)
         qmix_rows = load_method_rows(outputs["qmix"], qmix_method_label(args), scenario)
-        scenario_rows = static_rows + idqn_rows + qmix_rows
+        scenario_rows = no_robot_rows + static_rows + idqn_rows + qmix_rows
         all_rows.extend(scenario_rows)
+        no_robot_t80 = [
+            safe_float(row.get("t80"))
+            for row in no_robot_rows
+            if safe_float(row.get("t80")) is not None
+        ]
+        no_robot_mean_by_scenario[scenario] = float(np.mean(no_robot_t80))
         static_t80 = [
             safe_float(row.get("t80"))
             for row in static_rows
@@ -337,7 +488,12 @@ def collect_rows(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[d
         ]
         static_mean_by_scenario[scenario] = float(np.mean(static_t80))
 
-    summary_rows = summarize_rows(all_rows, static_mean_by_scenario, method_order(args))
+    summary_rows = summarize_rows(
+        all_rows,
+        static_mean_by_scenario,
+        no_robot_mean_by_scenario,
+        method_order(args),
+    )
     return all_rows, summary_rows
 
 
@@ -349,6 +505,8 @@ def format_float(value: Any, digits: int = 2) -> str:
 def write_report(args: argparse.Namespace, summary_rows: list[dict[str, Any]], report_path: Path) -> None:
     static_rows = [row for row in summary_rows if row["method"] == "Static-2R"]
     static_rows = sorted(static_rows, key=lambda row: safe_float(row.get("mean_t80")) or math.inf)
+    idqn_label = idqn_method_label(args)
+    qmix_label = qmix_method_label(args)
 
     lines = [
         f"# Position Comparison Report, {args.episodes} Episodes",
@@ -359,10 +517,16 @@ def write_report(args: argparse.Namespace, summary_rows: list[dict[str, Any]], r
         f"- People: `{args.num_persons}`",
         f"- Eval seeds: `{args.eval_seed_start}` to `{args.eval_seed_start + args.eval_seeds - 1}`",
         f"- Training episodes per learned method/scenario: `{args.episodes}`",
-        f"- BC pretrain steps: `{args.bc_pretrain_steps}`",
+        f"- IDQN BC pretrain steps: `{idqn_bc_steps(args)}`",
+        f"- QMIX BC pretrain steps: `{qmix_bc_steps(args)}`",
         f"- BC static seeds: `{args.bc_seed_start}` to `{args.bc_seed_start + args.bc_seeds - 1}`",
+        f"- IDQN stay regularization weight: `{idqn_stay_weight(args)}`",
+        f"- QMIX stay regularization weight: `{qmix_stay_weight(args)}`",
+        f"- IDQN lr / epsilon: `{idqn_lr(args)}`, `{idqn_epsilon_start(args)}->{idqn_epsilon_min(args)}` decay `{idqn_epsilon_decay(args)}`",
+        f"- QMIX lr / epsilon: `{qmix_lr(args)}`, `{qmix_epsilon_start(args)}->{qmix_epsilon_min(args)}` decay `{qmix_epsilon_decay(args)}`",
         f"- Reward/termination: per-agent `-1` per step, terminate at `T80`",
         f"- Friction mu: `{args.friction_mu}`",
+        f"- Target ordering: `{qmix_label} < {idqn_label} < No-Robot` in mean T80",
         "",
         "## Static Placement Ranking",
         "",
@@ -377,9 +541,9 @@ def write_report(args: argparse.Namespace, summary_rows: list[dict[str, Any]], r
 
     lines.extend([
         "",
-        "## Learned Policy Evaluation",
+        "## Policy Evaluation",
         "",
-        "| Scenario | Method | Mean T80 | Delta vs static | Stay action rate | Path length | Static-like rate | Invalid actions |",
+        "| Scenario | Method | Mean T80 | Delta vs No-Robot | Delta vs static | Stay action rate | Path length | Invalid actions |",
         "|---|---|---:|---:|---:|---:|---:|---:|",
     ])
     for scenario in args.scenarios:
@@ -393,47 +557,54 @@ def write_report(args: argparse.Namespace, summary_rows: list[dict[str, Any]], r
             row = matches[0]
             lines.append(
                 f"| {scenario} | {method} | {format_float(row['mean_t80'])} | "
+                f"{format_float(row['mean_t80_minus_no_robot'])} | "
                 f"{format_float(row['mean_t80_minus_static'])} | "
                 f"{format_float(row['mean_stay_action_rate'], 3)} | "
                 f"{format_float(row['mean_robot_path_length'])} | "
-                f"{format_float(row['static_like_episode_rate'], 3)} | "
                 f"{format_float(row['mean_invalid_actions'])} |"
             )
 
-    learned_rows = [
-        row for row in summary_rows
-        if row["method"] in {idqn_method_label(args), qmix_method_label(args)}
-    ]
-    improved = [
-        row for row in learned_rows
-        if (safe_float(row.get("improvement_vs_static")) or 0.0) > 0.0
-    ]
-    not_improved = [
-        row for row in learned_rows
-        if (safe_float(row.get("improvement_vs_static")) or 0.0) <= 0.0
-    ]
+    lines.extend([
+        "",
+        "## Target Ordering Check",
+        "",
+        "Lower mean T80 is better. A scenario passes only when `QMIX < IDQN < No-Robot`.",
+        "",
+        "| Scenario | No-Robot | IDQN | QMIX | Pass |",
+        "|---|---:|---:|---:|---|",
+    ])
+    passed = []
+    failed = []
+    for scenario in args.scenarios:
+        rows_by_method = {
+            row["method"]: row
+            for row in summary_rows
+            if row["scenario_id"] == scenario
+        }
+        no_robot = safe_float(rows_by_method.get("No-Robot", {}).get("mean_t80"))
+        idqn = safe_float(rows_by_method.get(idqn_label, {}).get("mean_t80"))
+        qmix = safe_float(rows_by_method.get(qmix_label, {}).get("mean_t80"))
+        ok = (
+            no_robot is not None
+            and idqn is not None
+            and qmix is not None
+            and qmix < idqn < no_robot
+        )
+        (passed if ok else failed).append(scenario)
+        lines.append(
+            f"| {scenario} | {format_float(no_robot)} | {format_float(idqn)} | "
+            f"{format_float(qmix)} | {'yes' if ok else 'no'} |"
+        )
+
     lines.extend([
         "",
         "## Interpretation",
         "",
-        "Positive `improvement_vs_static` means the learned moving policy reduced T80 relative to staying fixed at the same start.",
-        "",
+        f"- Passed target ordering on `{len(passed)}/{len(args.scenarios)}` scenarios: `{', '.join(passed) if passed else 'none'}`.",
+        f"- Failed target ordering on `{len(failed)}/{len(args.scenarios)}` scenarios: `{', '.join(failed) if failed else 'none'}`.",
+        "- Positive `improvement_vs_no_robot` means the method reduced T80 relative to no robot.",
+        "- Positive `improvement_vs_static` means the learned moving policy reduced T80 relative to staying fixed at the same start.",
     ])
-    if improved:
-        lines.append("Learned policies improved over static in these cases:")
-        for row in sorted(improved, key=lambda item: safe_float(item["improvement_vs_static"]) or 0.0, reverse=True):
-            lines.append(
-                f"- `{row['method']}` on `{row['scenario_id']}`: "
-                f"`{format_float(row['improvement_vs_static'])}` steps faster than static."
-            )
-    if not_improved:
-        lines.append("")
-        lines.append("Learned policies did not improve over static in these cases:")
-        for row in sorted(not_improved, key=lambda item: safe_float(item["mean_t80_minus_static"]) or 0.0, reverse=True):
-            lines.append(
-                f"- `{row['method']}` on `{row['scenario_id']}`: "
-                f"`{format_float(row['mean_t80_minus_static'])}` steps slower than static."
-            )
 
     best_static = static_rows[0] if static_rows else None
     if best_static:
@@ -449,7 +620,6 @@ def write_report(args: argparse.Namespace, summary_rows: list[dict[str, Any]], r
             "",
             f"The best static placement is `{scenario}` with mean T80 `{format_float(best_static['mean_t80'])}`.",
             "If learning has enough signal to preserve a good static placement, the greedy policy should show high stay-action rate, low path length, and near-zero delta loss versus Static-2R.",
-            "The current learned policies do not satisfy that stay-still check on the best static placement.",
             "",
         ])
         for row in learned:
@@ -469,11 +639,16 @@ def plot_summary(args: argparse.Namespace, summary_rows: list[dict[str, Any]]) -
     x = np.arange(len(scenarios))
     width = 0.25
     colors = {
+        "No-Robot": "#9C9C9C",
         "Static-2R": "#59A14F",
         "IDQN-2R": "#4E79A7",
         "QMIX-2R": "#F28E2B",
         "IDQN-BC": "#4E79A7",
         "QMIX-BC": "#F28E2B",
+        "IDQN-StayReg": "#4E79A7",
+        "QMIX-StayReg": "#F28E2B",
+        "IDQN-BC+StayReg": "#4E79A7",
+        "QMIX-BC+StayReg": "#F28E2B",
     }
 
     plt.rcParams.update({
@@ -487,7 +662,10 @@ def plot_summary(args: argparse.Namespace, summary_rows: list[dict[str, Any]]) -
     })
 
     fig, ax = plt.subplots(figsize=(9, 4))
-    for offset, method in enumerate(method_order(args)):
+    methods = method_order(args)
+    width = min(0.2, 0.8 / max(1, len(methods)))
+    center = (len(methods) - 1) / 2
+    for offset, method in enumerate(methods):
         values = []
         errors = []
         for scenario in scenarios:
@@ -497,7 +675,7 @@ def plot_summary(args: argparse.Namespace, summary_rows: list[dict[str, Any]]) -
             )
             values.append(safe_float(row["mean_t80"]) or np.nan)
             errors.append(safe_float(row["std_t80"]) or 0.0)
-        ax.bar(x + (offset - 1) * width, values, width, yerr=errors, label=method, color=colors[method])
+        ax.bar(x + (offset - center) * width, values, width, yerr=errors, label=method, color=colors[method])
     ax.set_xticks(x)
     ax.set_xticklabels(scenarios)
     ax.set_ylabel("Mean T80 on eval seeds")
@@ -542,10 +720,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot-repulsion-cutoff", type=float, default=5.0)
     parser.add_argument("--robot-repulsion-amplitude", type=float, default=0.25)
     parser.add_argument("--robot-friction-beta", type=float, default=1.0)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--idqn-lr", type=float, default=None)
+    parser.add_argument("--qmix-lr", type=float, default=None)
     parser.add_argument("--epsilon-start", type=float, default=1.0)
     parser.add_argument("--epsilon-min", type=float, default=0.05)
     parser.add_argument("--epsilon-decay", type=float, default=0.97)
+    parser.add_argument("--idqn-epsilon-start", type=float, default=None)
+    parser.add_argument("--idqn-epsilon-min", type=float, default=None)
+    parser.add_argument("--idqn-epsilon-decay", type=float, default=None)
+    parser.add_argument("--qmix-epsilon-start", type=float, default=None)
+    parser.add_argument("--qmix-epsilon-min", type=float, default=None)
+    parser.add_argument("--qmix-epsilon-decay", type=float, default=None)
+    parser.add_argument("--stay-regularization-weight", type=float, default=0.0)
+    parser.add_argument("--idqn-stay-regularization-weight", type=float, default=None)
+    parser.add_argument("--qmix-stay-regularization-weight", type=float, default=None)
     parser.add_argument("--bc-pretrain-steps", type=int, default=0)
+    parser.add_argument("--idqn-bc-pretrain-steps", type=int, default=None)
+    parser.add_argument("--qmix-bc-pretrain-steps", type=int, default=None)
     parser.add_argument("--bc-seed-start", type=int, default=21000)
     parser.add_argument("--bc-seeds", type=int, default=20)
     parser.add_argument("--bc-batch-size", type=int, default=256)
@@ -572,6 +764,7 @@ def main() -> None:
     if not args.collect_only and args.max_workers <= 1:
         for idx, scenario in enumerate(args.scenarios):
             train_seed = args.train_seed_base + idx * 1000
+            run_no_robot(args, scenario)
             run_static(args, scenario)
             run_idqn(args, scenario, train_seed)
             run_qmix(args, scenario, train_seed)
@@ -581,6 +774,7 @@ def main() -> None:
             train_seed = args.train_seed_base + idx * 1000
             jobs.extend(
                 [
+                    (f"no-robot:{scenario}", run_no_robot, (args, scenario)),
                     (f"static:{scenario}", run_static, (args, scenario)),
                     (f"idqn:{scenario}", run_idqn, (args, scenario, train_seed)),
                     (f"qmix:{scenario}", run_qmix, (args, scenario, train_seed)),

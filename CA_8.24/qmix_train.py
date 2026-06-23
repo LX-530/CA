@@ -78,12 +78,14 @@ class QMixLearner:
         gamma: float = 1.0,
         batch_size: int = 64,
         buffer_size: int = 30000,
+        stay_regularization_weight: float = 0.0,
     ):
         self.n_agents = n_agents
         self.action_dim = action_dim
         self.device = device
         self.gamma = gamma
         self.batch_size = batch_size
+        self.stay_regularization_weight = stay_regularization_weight
         self.memory: deque = deque(maxlen=buffer_size)
 
         self.agent_net = AgentQNetwork(obs_dim, action_dim, hidden_size).to(device)
@@ -142,7 +144,18 @@ class QMixLearner:
             next_q_total = self.target_mixer(next_agent_qs, next_states_t)
             target = rewards_t + (1.0 - dones_t) * self.gamma * next_q_total
 
-        loss = nn.functional.mse_loss(q_total, target)
+        td_loss = nn.functional.mse_loss(q_total, target)
+        loss = td_loss
+        if self.stay_regularization_weight > 0.0:
+            flat_q_values = q_values.view(batch_size * self.n_agents, self.action_dim)
+            stay_targets = torch.full(
+                (batch_size * self.n_agents,),
+                STAY_ACTION,
+                dtype=torch.long,
+                device=self.device,
+            )
+            stay_loss = nn.functional.cross_entropy(flat_q_values, stay_targets)
+            loss = td_loss + self.stay_regularization_weight * stay_loss
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(
@@ -291,6 +304,7 @@ def train_qmix(args: argparse.Namespace) -> dict:
         gamma=args.gamma,
         batch_size=args.batch_size,
         buffer_size=args.buffer_size,
+        stay_regularization_weight=args.stay_regularization_weight,
     )
 
     output_dir = Path(args.output_dir)
@@ -336,13 +350,15 @@ def train_qmix(args: argparse.Namespace) -> dict:
             "bc_pretrain_steps": bc_summary["bc_pretrain_steps"],
             "bc_dataset_rows": bc_summary["bc_dataset_rows"],
             "bc_final_loss": bc_summary["bc_final_loss"],
+            "stay_regularization_weight": args.stay_regularization_weight,
         })
         train_rows.append(row)
         if episode == 1 or episode % args.log_interval == 0:
             print(
                 f"QMIX episode {episode}/{args.episodes}: "
                 f"t80={row['t80']} return={row['mean_episode_return']} "
-                f"invalid={row['invalid_action_count']} eps={epsilon:.3f}"
+                f"invalid={row['invalid_action_count']} eps={epsilon:.3f}",
+                flush=True,
             )
 
     torch.save(
@@ -379,6 +395,7 @@ def train_qmix(args: argparse.Namespace) -> dict:
             f"- Episodes: `{args.episodes}`",
             f"- Device: `{device}`",
             f"- BC pretrain summary: `{bc_summary}`",
+            f"- Stay regularization weight: `{args.stay_regularization_weight}`",
             f"- Train summary: `{train_summary}`",
             f"- Greedy eval summary: `{eval_summary}`",
             f"- Static same-start eval summary: `{static_summary}`",
@@ -431,6 +448,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bc-seeds", type=int, default=20)
     parser.add_argument("--bc-batch-size", type=int, default=256)
     parser.add_argument("--bc-lr", type=float, default=1e-3)
+    parser.add_argument("--stay-regularization-weight", type=float, default=0.0)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--device", default="")
     parser.add_argument("--output-dir", default="result/visual")

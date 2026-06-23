@@ -46,6 +46,13 @@ def main() -> None:
     parser.add_argument("--seeds", type=int, default=5)
     parser.add_argument("--termination-ratio", type=float, default=0.8)
     parser.add_argument("--target-ratio", type=float, default=0.8)
+    parser.add_argument("--friction-mu", type=float, default=0.6)
+    parser.add_argument("--exit-service-steps", type=int, default=2)
+    parser.add_argument("--robot-repulsion-cutoff", type=float, default=5.0)
+    parser.add_argument("--robot-repulsion-amplitude", type=float, default=0.25)
+    parser.add_argument("--robot-friction-beta", type=float, default=1.0)
+    parser.add_argument("--no-progress-limit", type=int, default=500)
+    parser.add_argument("--max-steps-guard", type=int, default=10000)
     parser.add_argument("--output-dir", default="result/visual")
     args = parser.parse_args()
 
@@ -63,6 +70,13 @@ def main() -> None:
             scenario_id=args.scenario,
             target_ratio=args.target_ratio,
             termination_ratio=args.termination_ratio,
+            exit_service_steps=args.exit_service_steps,
+            friction_mu=args.friction_mu,
+            no_progress_limit=args.no_progress_limit,
+            max_steps_guard=args.max_steps_guard,
+            robot_repulsion_cutoff=args.robot_repulsion_cutoff,
+            robot_repulsion_amplitude=args.robot_repulsion_amplitude,
+            robot_friction_beta=args.robot_friction_beta,
         )
         summary, steps = run_static_episode(config)
         episode_rows.append(summary)

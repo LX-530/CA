@@ -48,11 +48,13 @@ class DQNAgent:
         gamma: float = 1.0,
         batch_size: int = 64,
         buffer_size: int = 20000,
+        stay_regularization_weight: float = 0.0,
     ):
         self.action_size = action_size
         self.gamma = gamma
         self.batch_size = batch_size
         self.device = device
+        self.stay_regularization_weight = stay_regularization_weight
         self.memory: deque = deque(maxlen=buffer_size)
         self.model = QNetwork(state_size, action_size, hidden_size).to(device)
         self.target_model = QNetwork(state_size, action_size, hidden_size).to(device)
@@ -83,11 +85,22 @@ class DQNAgent:
         rewards_t = torch.as_tensor(rewards, dtype=torch.float32, device=self.device)
         dones_t = torch.as_tensor(dones, dtype=torch.float32, device=self.device)
 
-        current_q = self.model(states_t).gather(1, actions_t.unsqueeze(1)).squeeze(1)
+        q_values = self.model(states_t)
+        current_q = q_values.gather(1, actions_t.unsqueeze(1)).squeeze(1)
         with torch.no_grad():
             next_q = self.target_model(next_states_t).max(dim=1).values
             target_q = rewards_t + (1.0 - dones_t) * self.gamma * next_q
-        loss = nn.functional.mse_loss(current_q, target_q)
+        td_loss = nn.functional.mse_loss(current_q, target_q)
+        loss = td_loss
+        if self.stay_regularization_weight > 0.0:
+            stay_targets = torch.full(
+                (len(states_t),),
+                STAY_ACTION,
+                dtype=torch.long,
+                device=self.device,
+            )
+            stay_loss = nn.functional.cross_entropy(q_values, stay_targets)
+            loss = td_loss + self.stay_regularization_weight * stay_loss
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.model.parameters(), 10.0)
@@ -234,6 +247,7 @@ def train_idqn(args: argparse.Namespace) -> dict:
             gamma=args.gamma,
             batch_size=args.batch_size,
             buffer_size=args.buffer_size,
+            stay_regularization_weight=args.stay_regularization_weight,
         )
         for _ in probe_env.agents
     ]
@@ -286,13 +300,15 @@ def train_idqn(args: argparse.Namespace) -> dict:
             "bc_pretrain_steps": bc_summary["bc_pretrain_steps"],
             "bc_dataset_rows": bc_summary["bc_dataset_rows"],
             "bc_final_loss": bc_summary["bc_final_loss"],
+            "stay_regularization_weight": args.stay_regularization_weight,
         })
         train_rows.append(row)
         if episode == 1 or episode % args.log_interval == 0:
             print(
                 f"IDQN episode {episode}/{args.episodes}: "
                 f"t80={row['t80']} return={row['mean_episode_return']} "
-                f"invalid={row['invalid_action_count']} eps={epsilon:.3f}"
+                f"invalid={row['invalid_action_count']} eps={epsilon:.3f}",
+                flush=True,
             )
 
     for idx, agent in enumerate(agents):
@@ -323,6 +339,7 @@ def train_idqn(args: argparse.Namespace) -> dict:
             f"- Episodes: `{args.episodes}`",
             f"- Device: `{device}`",
             f"- BC pretrain summary: `{bc_summary}`",
+            f"- Stay regularization weight: `{args.stay_regularization_weight}`",
             f"- Train summary: `{train_summary}`",
             f"- Greedy eval summary: `{eval_summary}`",
             f"- Static same-start eval summary: `{static_summary}`",
@@ -374,6 +391,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bc-seeds", type=int, default=20)
     parser.add_argument("--bc-batch-size", type=int, default=256)
     parser.add_argument("--bc-lr", type=float, default=1e-3)
+    parser.add_argument("--stay-regularization-weight", type=float, default=0.0)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--device", default="")
     parser.add_argument("--output-dir", default="result/visual")

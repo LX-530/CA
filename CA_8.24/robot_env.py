@@ -47,6 +47,7 @@ class RobotEnvConfig:
     exit_service_steps: int = 2
     friction_mu: float = 0.6
     no_progress_limit: int = 500
+    no_escape_limit: int = 500
     max_steps_guard: int = 10000
     robot_repulsion_cutoff: float = 5.0
     robot_repulsion_amplitude: float = 0.25
@@ -130,6 +131,7 @@ class RobotEnvironment(gym.Env):
         self.current_step = 0
         self.next_exit_available_step = 0
         self.no_progress_steps = 0
+        self.no_escape_steps = 0
         self.failed = False
         self.failure_reason: str | None = None
         self.done = False
@@ -186,9 +188,18 @@ class RobotEnvironment(gym.Env):
         else:
             self.no_progress_steps = 0
 
+        if escaped_this_step == 0:
+            self.no_escape_steps += 1
+        else:
+            self.no_escape_steps = 0
+
         if self.no_progress_steps >= self.config.no_progress_limit:
             self.failed = True
             self.failure_reason = "deadlock"
+            self.done = True
+        elif self.no_escape_steps >= self.config.no_escape_limit:
+            self.failed = True
+            self.failure_reason = "no_escape_stall"
             self.done = True
         elif self.current_step >= self.config.max_steps_guard:
             self.failed = True
@@ -562,7 +573,10 @@ class RobotEnvironment(gym.Env):
                 self.invalid_action_count / max(1, self.current_step + 1),
                 self.friction_blocks / max(1, self.current_step + 1),
                 self.exit_conflicts / max(1, self.current_step + 1),
-                self.no_progress_steps / max(1, self.config.no_progress_limit),
+                max(
+                    self.no_progress_steps / max(1, self.config.no_progress_limit),
+                    self.no_escape_steps / max(1, self.config.no_escape_limit),
+                ),
             ],
             dtype=np.float32,
         )
@@ -589,6 +603,8 @@ class RobotEnvironment(gym.Env):
             "deadlock": self.failure_reason == "deadlock",
             "failed": self.failed,
             "failure_reason": self.failure_reason,
+            "no_progress_steps": self.no_progress_steps,
+            "no_escape_steps": self.no_escape_steps,
             "invalid_action_count": self.invalid_action_count,
             "normal_conflicts": self.normal_conflicts,
             "exit_conflicts": self.exit_conflicts,
@@ -632,6 +648,7 @@ class RobotEnvironment(gym.Env):
             "t_all": info["t_all"],
             "success_80": info["success_80"],
             "deadlock": info["deadlock"],
+            "no_escape_stall": info["failure_reason"] == "no_escape_stall",
             "invalid_action_count": info["invalid_action_count"],
             "final_escaped": info["final_escaped"],
             "robot_path_length": info["robot_path_length"],
